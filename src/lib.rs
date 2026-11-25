@@ -5,6 +5,7 @@
 //! terminal or a real sshd.
 
 pub mod cli;
+pub mod completion;
 pub mod config;
 pub mod doctor;
 pub mod model;

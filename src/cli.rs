@@ -106,6 +106,51 @@ pub enum Command {
     },
     /// Create the config file if it does not exist yet
     Init,
+    /// Print or install shell completion (bash, zsh, fish)
+    Completion(CompletionArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct CompletionArgs {
+    /// Shell: auto (default), bash, zsh, or fish
+    #[arg(value_name = "SHELL")]
+    pub shell: Option<String>,
+
+    /// Idempotently install a completion file and configure the shell
+    #[arg(long, group = "completion_action")]
+    pub install: bool,
+
+    /// Remove the completion file and any managed rc block
+    #[arg(long, group = "completion_action")]
+    pub uninstall: bool,
+
+    /// Report whether completion is installed and current
+    #[arg(long, group = "completion_action")]
+    pub status: bool,
+
+    /// Override the shell rc file used for the small setup block
+    #[arg(long, value_name = "PATH")]
+    pub rc_file: Option<PathBuf>,
+
+    /// Only write the completion file here; do not touch shell config
+    #[arg(long, value_name = "DIR")]
+    pub dir: Option<PathBuf>,
+
+    /// Write through symlinked completion/rc files (default: refuse)
+    #[arg(long)]
+    pub follow_symlinks: bool,
+
+    /// Show what install/uninstall would change without writing
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Emit machine-readable JSON on stdout
+    #[arg(long)]
+    pub json: bool,
+
+    /// Suppress the human summary
+    #[arg(long)]
+    pub quiet: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -154,6 +199,43 @@ mod tests {
     fn json_and_format_conflict() {
         assert!(parse(&["--json", "--format", "table"]).is_err());
         assert!(parse(&["--json", "--format", "json"]).is_err());
+    }
+
+    #[test]
+    fn parses_completion_surface() {
+        let cli = parse(&[
+            "completion",
+            "bash",
+            "--install",
+            "--rc-file",
+            "/tmp/rc",
+            "--dry-run",
+            "--json",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Completion(args)) => {
+                assert_eq!(args.shell.as_deref(), Some("bash"));
+                assert!(args.install);
+                assert_eq!(
+                    args.rc_file.as_deref(),
+                    Some(std::path::Path::new("/tmp/rc"))
+                );
+                assert!(args.dry_run);
+                assert!(args.json);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+        assert!(matches!(
+            parse(&["completion"]).unwrap().command,
+            Some(Command::Completion(_))
+        ));
+    }
+
+    #[test]
+    fn completion_actions_are_mutually_exclusive() {
+        assert!(parse(&["completion", "--install", "--uninstall"]).is_err());
+        assert!(parse(&["completion", "--status", "--install"]).is_err());
     }
 
     #[test]

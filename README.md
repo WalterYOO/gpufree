@@ -10,7 +10,7 @@ gpufree 4090-1 gpu06              # 位置参数也可以
 
 ## 状态
 
-**M1–M3 已实现，独立评审 PASS。** `cargo fmt --check`、`clippy -D warnings`、197 个测试、release build 全部通过；真实 `4090-1` 冒烟正常。
+**M1–M3 已实现，独立评审 PASS；v1.5 补全功能已实现，最新一轮独立评审 PASS（经多轮整改）。** `cargo fmt --check`、`clippy -D warnings`、271 个测试、release build 全部通过；真实 `4090-1` 冒烟正常。
 
 - 设计稿：[`docs/DESIGN.md`](docs/DESIGN.md)
 - 独立验收计划：[`docs/reviews/codex-m1-m3-plan.md`](docs/reviews/codex-m1-m3-plan.md)
@@ -29,6 +29,7 @@ gpufree 4090-1 gpu06              # 位置参数也可以
 - **坏机器不拖垮整批**：每台独立超时、进程组 kill、错误分类进 JSON。
 - **终端消失就退出**：关闭窗口、kill tmux session、ssh 断开时取消全部探测并退出，不留 100% CPU 的孤儿进程（A29）。
 - **预设即 ssh 别名**：不复制 IP/端口/用户，不制造第二份拓扑真相。
+- **补全只有一份语法**：bash/zsh/fish 适配脚本只调用隐藏的 `gpufree __complete`，候选由 clap 树和真实配置/ssh 别名在运行时算出。
 
 ## 构建
 
@@ -41,6 +42,16 @@ make test
 要求 Rust 1.85+（edition 2024）。主要依赖：`clap`、`ratatui`（crossterm 用其重导出）、`serde`、`toml`、`libc`。
 
 不使用 tokio：ssh 是阻塞子进程，固定 worker 线程 + `mpsc` 足够。
+
+## 命令补全
+
+```bash
+gpufree completion --install     # 幂等安装（bash / zsh / fish 自动检测）
+gpufree completion --status      # 已安装？是否过期？
+gpufree completion --uninstall   # 删除脚本与托管 rc 块
+```
+
+`--install` 会把补全文件放进 shell 的 autoload 目录；只有 shell 无法自动加载时才在 rc 里追加一个带 marker 的小块（`--rc-file` 可覆盖位置，`--dir` 则完全不动 shell 配置）。`--preset` 补配置里的 preset 名，`--host` 与位置参数补 `~/.ssh/config` 的别名和 preset 里的 host。细节见 [`docs/DESIGN.md` §17](docs/DESIGN.md)。
 
 ## 配置
 
@@ -74,6 +85,7 @@ src/probe/          ssh 进程管理、脚本模板、解析、transport
 src/output/         json / table / 控制字符清理
 src/tui/            面板 App、渲染、过滤
 src/doctor.rs       自检
+src/completion/     补全脚本、安装/卸载、隐藏 __complete 引擎
 tests/              CLI 集成测试与 JSON golden
 testdata/           fake-ssh 等测试夹具
 docs/               设计稿与评审

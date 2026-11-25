@@ -23,6 +23,7 @@ pub fn run(cli: Cli) -> i32 {
         Some(Command::Init) => return cmd_init(&cli),
         Some(Command::Presets { action }) => return cmd_presets(&cli, action),
         Some(Command::Doctor { probe }) => return cmd_doctor(&cli, *probe),
+        Some(Command::Completion(args)) => return crate::completion::run(args),
         None => {}
     }
     if cli.print_config {

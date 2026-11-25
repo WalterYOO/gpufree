@@ -2,13 +2,14 @@
 
 > 一条命令看清一组服务器的 GPU 空闲情况：`--json` 给脚本，TTY 下开一个可检索的终端面板。
 
-- 版本：v1.4
+- 版本：v1.5
 - 日期：2026-11-25
-- 状态：设计定稿，M1–M3 已实现
+- 状态：设计定稿，M1–M3 与 v1.5 补全已实现
 - 变更：用户指定 Rust；进程管理、TUI、依赖选型随之调整，SSH 协议、空闲判定、JSON schema、v1 范围不变
 - v1.2 变更：用户评审补充 TUI 每机空闲小计与单机详情页（R5 / §8.1 / §8.5 / D20）；探测层与 JSON 不变
 - v1.3 变更：独立审查提出 25 处歧义，§16 给出最终实现口径（A1–A28，含首轮审查补遗）；`output_limit` 错误分类；示例配置修正
 - v1.4 变更：终端消失（pty 关闭 / tmux session 被 kill）时 TUI 必须自退，不能依赖 crossterm 的事件等待（A29 / §8.4）；新增 pty 回归测试
+- v1.5 变更：新增 shell 补全（§17）：`completion` 子命令负责打印/安装/卸载/状态，隐藏 `__complete` 运行时遍历 clap 树给出候选，支持 preset 名与 ssh 别名
 
 ---
 
@@ -133,6 +134,10 @@ gpufree doctor [--probe]                 # 自检；--probe 真连
 gpufree presets list | validate
 gpufree --print-config                   # 生效配置（含 transport 判定）
 gpufree init                             # 首次生成配置（不覆盖已有文件）
+gpufree completion [SHELL]               # 打印补全脚本（默认自动检测 shell）
+gpufree completion --install             # 幂等安装补全文件并在需要时改 rc
+gpufree completion --status              # 查看是否已安装且为当前版本
+gpufree completion --uninstall           # 删除补全文件与托管 rc 块
 ```
 
 输入来源互斥：`--preset` / `--host` / `--hosts` / 位置参数 / `--hosts-file` 只能选一种，冲突报用法错误（clap `ArgGroup`）。没有任何来源且无 `default_preset` 时，打印示例并退出 2。
@@ -624,6 +629,7 @@ v1 明确不做：面板内切 preset、复制到剪贴板、多选刷新。
 - **清理**：对 CLI 进程发 SIGINT，断言 fake-ssh 及其子进程全部消失（无孤儿）；worker 提前退出/panic 时 JSON 仍能正常收尾。
 - **golden**：注入固定时间，比较 `serde_json::Value`（键集合与顺序由结构体声明固定）。
 - **TUI**：测 `App` 状态转移、过滤/排序纯函数、每机 `free/total` 计数；详情页在 ok / error / no_gpu / `processes=null` 四种输入下的文本渲染，不做整屏终端快照。
+- **补全**：tokenizer 与上下文遍历（选项值、子命令、`--opt=value`、`--`）、动态 preset / ssh 别名、file/dir kind；安装/卸载/status 幂等、marker 缺失/重复/嵌套一律报错、symlink 默认拒绝、`--dir` 不碰 rc；bash/zsh 适配脚本在真实 shell 里端到端验证。
 - **手工验收**：公司直连、外网 remote、断网、跳板超时、无 GPU 的 NAS、MIG 机器、HPC module 环境。
 
 ---
@@ -706,3 +712,79 @@ v1 明确不做：面板内切 preset、复制到剪贴板、多选刷新。
 | A27 | 重复的 `@@GPU` 段 → `parse_error`（retryable=false），不得归类为 `nvidia_smi_failed`。 |
 | A28 | doctor 的 `ssh -V` 非零退出同样计为检查失败（doctor 返回 1），不能输出 “all checks passed”。 |
 | A29 | TUI 必须自己 `poll(2)` 等 stdin 并识别 `POLLHUP`/`POLLERR`/`POLLNVAL`，不能把等待交给 `crossterm::event::poll`：crossterm 0.29 的 mio 事件源读到 EOF（`Ok(0)`）时死循环，pty 消失后进程会 100% CPU 泄漏且 ssh 子进程不收。写 stdout 遇到 `EIO`/`EPIPE` 同样按终端消失处理，cancel 探测后以 0 退出。 |
+
+---
+
+## 17. Shell 补全（v1.5）
+
+设计目标与 qtts 一致：**CLI 语法只有一份**。shell 端只放极小的转发脚本，命令、选项、值域全部由隐藏的 `gpufree __complete` 在运行时遍历 clap 树得出。新增选项不需要重新生成或重新安装脚本，也不会出现 bash / zsh / fish 三份语法漂移。
+
+### 17.1 用户表面
+
+```bash
+gpufree completion                 # 自动检测 shell，打印适配脚本
+gpufree completion bash            # 显式指定
+gpufree completion --install       # 幂等安装（脚本文件 + 必要时 rc 块）
+gpufree completion --status        # current / stale / not_installed / foreign / malformed / unsupported_version
+gpufree completion --uninstall     # 删除脚本文件与托管 rc 块
+```
+
+| 选项 | 含义 |
+|---|---|
+| `--rc-file PATH` | 覆盖写 setup 块的 rc 文件 |
+| `--dir DIR` | 只把补全文件写到 DIR，不碰 shell 配置（与 `--rc-file` 同用直接报错） |
+| `--follow-symlinks` | 允许写穿 symlink（默认拒绝） |
+| `--dry-run` | 只报告 install/uninstall 会改什么 |
+| `--json` | stdout 输出机器可读 JSON |
+| `--quiet` | 抑制人类摘要 |
+
+`state` 的顺序：脚本不是本工具生成的 → `foreign`；rc 块重复/损坏 → `malformed`；rc 块版本比当前新 → `unsupported_version`（这两项优先于“没装”，脚本缺失也不会把 rc 的问题藏起来）；脚本缺失 → `not_installed`；脚本内容过期或 rc 块不是 current → `stale`；全部一致 → `current`。`rc_state` 单独给出 rc 的结论（`not_required` / `missing` / `current` / `stale` / `malformed` / `unsupported_version`）。
+
+环境变量：`GPUFREE_COMPLETION_SHELL` 覆盖检测；`GPUFREE_COMPLETION_RC` 提供默认 rc 路径（**显式 `--dir` 时忽略**，避免“只写文件”被全局变量变成改 rc）；`GPUFREE_COMPLETION_BIN` 让适配脚本调用非 PATH 中的二进制。
+
+### 17.2 运行时协议
+
+适配脚本调用：
+
+```bash
+gpufree __complete --shell bash --line "$COMP_LINE" --point "$byte_point"
+gpufree __complete --shell zsh  --cword $((CURRENT-1)) -- "${words[@]}" ""
+gpufree __complete --shell fish --cword (count $tokens) -- $tokens "$current"
+```
+
+stdout 第一行固定为 `#gpufree-complete:v1 kind=plain|file|dir`，其后每行一个候选。`file` / `dir` 不带候选，由 shell 自己的 `_files` / `_directories` / `__fish_complete_path` 接管。`__complete` 在 clap 解析之前拦下，任何内部错误都静默退出 0——按 TAB 绝不能打印 traceback 或用法错误。
+
+`--point` 的契约是 `--line` 的**字节**偏移，不是字符下标。bash 3.2 的 `COMP_POINT` 本身是字节偏移，bash ≥ 5 改成了字符下标，而 `${VAR:0:N}` 默认按字符切；所以 bash 适配脚本先按 `BASH_VERSINFO[0]` 选对切片单位（`< 5` 时在 `LC_ALL=C` 下切），再把切出的前缀按字节长度换算成 `--point` 传进来。这样把光标移到含中文的行中间也按同一套语义补全。
+
+候选来源：
+
+- 当前子命令可见的选项 + 全局选项；已使用过的非可重复选项不再出现。
+- `--format` / `--transport` / `--color` 等枚举值取自 clap 的 possible values。
+- `--preset`：读取配置（尊重命令行上的 `--config`）里的 `[presets.*]` 名称。
+- `--host` / 位置参数：`~/.ssh/config` 的 `Host` 别名（跳过通配与 `!` 取反）加上所有 preset 的 hosts；`--hosts a,b,` 只补最后一段并保留前缀。
+- `--config` / `--hosts-file` / `--rc-file` → `kind=file`；`--dir` → `kind=dir`。
+- 上限 1000 个候选、单个候选 4096 字节，控制字符一律丢弃。
+- 来自 `~/.ssh/config` 或 `--config` 的**动态**候选先过字符合集：只保留各语言文字、数字和 `._-@:+/%`。这些名字会原样进入命令行，而 bash 的 readline 即使给候选加双引号，`"$(cmd)"` 在回车时仍会执行；含 `$`、反引号、引号、反斜杠、通配符、`;|&()<>{}`、`=`、`~`、`#`、`!`、空白的名字直接不出现（静态的选项名和枚举值不受影响）。
+
+`--opt=value` 形式（`--format=j`、`--config=~/tm`）由引擎返回完整 token，再按各 shell 的词切规则处理：bash 的 `COMP_WORDBREAKS` 含 `=`，readline 只替换最后一个 `=` 之后的部分，适配脚本据此裁剪候选，并自己用 `compgen -f/-d` 补文件（不注册 `-o default`，所以没有候选时不会回退成文件名）；带引号的值（`--config="<path>`、含空格的路径）先按引号/反斜杠解析出真实值再补全，由 readline 负责补回引号。只有开头引号到光标仍未闭合时才算“整段带引号”；引号在中途闭合（`--config="/tmp/x"/a=b/space`）之后按普通文本处理，仍以最后一个未转义的 `=` 为断点。readline 只在最后一个**未被引号或反斜杠转义**的 `=` 处断词（`x\=y` 里的 `=` 不算），替换的是它之后的**原始**文本；而 `compgen -f` 在补全函数里返回的是已经去掉引号和反斜杠转义的文件名（`sp\ ace/a` → `sp ace/a`，`"my dir"` → `my dir`）。所以裁剪候选时先把 raw 前缀按 bash 的去引用规则折算成长度（单引号内不做转义，双引号内只对 `$` `` ` `` `"` `\` 去转义），再用它切结果：`--config=/w/sp\ ace/a=b/space` 补成 `.../a=b/spacefile` 而不是 `.../a=/spacefile`，`--config=/w/"my dir"/a=b/space` 也不会被引号多算两个字符。zsh 用 `compset -P '--[^=]#='` 只剥掉选项分隔符，让路径里合法的 `=` 也能补全；fish 用 `-f` 关闭默认文件补全，按第一个 `=` 拆出前缀后调用 `__fish_complete_path` / `__fish_complete_directories` 再拼回去。
+
+### 17.3 安装位置与 rc 块
+
+| shell | 默认脚本位置 | 是否改 rc |
+|---|---|---|
+| bash | `$BASH_COMPLETION_USER_DIR/completions/gpufree`；否则装了 bash-completion 时 `${XDG_DATA_HOME}/bash-completion/completions/gpufree`；否则 `${XDG_DATA_HOME}/gpufree/completion.bash` | 仅最后一种需要 `source` 块 |
+| zsh | Oh My Zsh 的 `custom/completions/_gpufree`；否则 rc 里 `fpath` 指向的可写目录；否则 `~/.zfunc/_gpufree` | 仅最后一种加 `fpath` + `compinit` 块 |
+| fish | `${XDG_CONFIG_HOME}/fish/completions/gpufree.fish` | 从不 |
+
+rc 块用成对 marker 包裹，只含两行 setup，不含补全脚本本体：
+
+```bash
+# >>> gpufree completion: zsh v1 >>>
+fpath=('/home/u/.zfunc' $fpath)
+autoload -Uz compinit && compinit -i
+# <<< gpufree completion: zsh v1 <<<
+```
+
+安装是幂等的：脚本内容按字节比较，rc 先剥离同 shell 的旧块再追加新块。rc 扫描先做一遍轻量 shell 词法分析：区分注释、单/双引号字符串、here-document 体（`<<'EOF'` / `<<-EOF`）、算术展开（`$((1 << 16))` 里的 `<<` 不是 heredoc）、参数展开（`${...}` 里的 `((` / `<<` 是字面量）和命令续行（行尾 `\`），只有落在真实代码里的 marker 才算托管块；分隔符是动态的（`<<$VAR`、``<<`cmd` ``）时无法可靠定位 body，直接失败闭合而不是猜。以下情况一律失败闭合（退出 2），不做猜测性修复：BEGIN 无 END、END 无 BEGIN、嵌套 marker、同一 shell 重复块、块版本高于本程序、目标 rc 不是合法 UTF-8、完成文件不是 gpufree 生成、存在无法解析的 heredoc。写文件走同目录临时文件 + `fsync` + `rename`，保留已有文件权限。
+
+`--uninstall` 只删除带 `# gpufree-generated completion file` 标记的脚本；遇到同名但非本程序生成的文件会报错而不是删除。
