@@ -2,12 +2,13 @@
 
 > 一条命令看清一组服务器的 GPU 空闲情况：`--json` 给脚本，TTY 下开一个可检索的终端面板。
 
-- 版本：v1.3
+- 版本：v1.4
 - 日期：2026-11-25
-- 状态：设计定稿，实现中
+- 状态：设计定稿，M1–M3 已实现
 - 变更：用户指定 Rust；进程管理、TUI、依赖选型随之调整，SSH 协议、空闲判定、JSON schema、v1 范围不变
 - v1.2 变更：用户评审补充 TUI 每机空闲小计与单机详情页（R5 / §8.1 / §8.5 / D20）；探测层与 JSON 不变
 - v1.3 变更：独立审查提出 25 处歧义，§16 给出最终实现口径（A1–A28，含首轮审查补遗）；`output_limit` 错误分类；示例配置修正
+- v1.4 变更：终端消失（pty 关闭 / tmux session 被 kill）时 TUI 必须自退，不能依赖 crossterm 的事件等待（A29 / §8.4）；新增 pty 回归测试
 
 ---
 
@@ -516,7 +517,8 @@ v1 明确不做：面板内切 preset、复制到剪贴板、多选刷新。
 ### 8.4 事件循环与渲染
 
 - `ratatui::init()` 建终端；`Drop` guard + panic hook 保证 raw mode / alternate screen 一定恢复。
-- 每帧：`ratatui::crossterm::event::poll(50ms)` → 用 `poll(0)` 循环排空已排队事件 → `try_recv` 批量 drain 结果 → 渲染。
+- 每帧：`poll(2)` 直接等 stdin 50ms（不用 crossterm 的等待，见 A29）→ 用 `poll(0)` 循环排空已排队事件 → `try_recv` 批量 drain 结果 → 渲染。
+- 终端消失（pty master 关闭、tmux session 被 kill、ssh 断开）：`POLLHUP`/`POLLERR`/`POLLNVAL` 或写 stdout 得到 `EIO` → cancel 全部探测、恢复终端、以 0 退出，不留孤儿进程。
 - 没有 async runtime；worker 线程与 UI 线程只通过 `mpsc` 交互。
 - 列表用 `ratatui::widgets::Table` + `TableState`；按可见高度切片行，只构造可见行，避免上千行全量布局。
 - 启动即探测；未完成行显示 spinner（100ms 帧），行位置按 preset 顺序固定。
@@ -703,3 +705,4 @@ v1 明确不做：面板内切 preset、复制到剪贴板、多选刷新。
 | A26 | 表格/TUI 渲染前必须剥离远端字符串中的 C0/C1 控制字符（ESC/OSC/BEL 等），JSON 保持原值由 serde 转义。 |
 | A27 | 重复的 `@@GPU` 段 → `parse_error`（retryable=false），不得归类为 `nvidia_smi_failed`。 |
 | A28 | doctor 的 `ssh -V` 非零退出同样计为检查失败（doctor 返回 1），不能输出 “all checks passed”。 |
+| A29 | TUI 必须自己 `poll(2)` 等 stdin 并识别 `POLLHUP`/`POLLERR`/`POLLNVAL`，不能把等待交给 `crossterm::event::poll`：crossterm 0.29 的 mio 事件源读到 EOF（`Ok(0)`）时死循环，pty 消失后进程会 100% CPU 泄漏且 ssh 子进程不收。写 stdout 遇到 `EIO`/`EPIPE` 同样按终端消失处理，cancel 探测后以 0 退出。 |

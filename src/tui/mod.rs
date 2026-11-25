@@ -9,6 +9,9 @@ pub mod ui;
 
 use std::time::Duration;
 
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
+
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
@@ -564,8 +567,80 @@ fn init_terminal() -> std::io::Result<()> {
     Ok(())
 }
 
-/// Run the TUI until `q`, ctrl-c, or a termination signal. Returns
-/// `130` on a signal, `0` otherwise.
+/// True when `poll(2)` reports hangup/error on `fd`.
+#[cfg(unix)]
+fn hangup_revents(revents: libc::c_short) -> bool {
+    revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
+}
+
+/// Outcome of waiting for terminal input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InputWait {
+    Ready,
+    Timeout,
+    Hangup,
+}
+
+/// Wait up to `timeout` for readable input on stdin, or for the terminal to
+/// disappear.
+///
+/// The TUI deliberately does not use `crossterm::event::poll` as its wait:
+/// crossterm 0.29's mio event source reads the tty in a loop that treats
+/// `Ok(0)` (EOF) as "no event yet" and never exits. When the pty master goes
+/// away (terminal window closed, tmux session killed, ssh dropped), the slave
+/// stays readable at EOF, so `event::poll` never returns — the process leaks
+/// at 100% CPU with probes and ssh children still alive. Polling here exposes
+/// `POLLHUP`, which lets us cancel and exit.
+#[cfg(unix)]
+fn wait_for_input(timeout: Duration) -> std::io::Result<InputWait> {
+    poll_fd(std::io::stdin().as_raw_fd(), timeout)
+}
+
+#[cfg(unix)]
+fn poll_fd(fd: std::os::fd::RawFd, timeout: Duration) -> std::io::Result<InputWait> {
+    let mut pfd = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let millis = timeout.as_millis().min(i32::MAX as u128) as i32;
+    loop {
+        // SAFETY: `pfd` is a valid pollfd for the duration of the call.
+        let ready = unsafe { libc::poll(&mut pfd, 1, millis) };
+        if ready < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(err);
+        }
+        if ready == 0 {
+            return Ok(InputWait::Timeout);
+        }
+        if hangup_revents(pfd.revents) {
+            return Ok(InputWait::Hangup);
+        }
+        return Ok(InputWait::Ready);
+    }
+}
+
+#[cfg(not(unix))]
+fn wait_for_input(_timeout: Duration) -> std::io::Result<InputWait> {
+    Ok(InputWait::Timeout)
+}
+
+/// Errors a vanished terminal produces on write. They mean "the pty is gone",
+/// not "gpufree is broken", so the TUI exits cleanly instead of reporting a
+/// terminal error nobody can see.
+fn is_terminal_gone(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::UnexpectedEof
+    ) || err.raw_os_error() == Some(libc::EIO)
+}
+
+/// Run the TUI until `q`, ctrl-c, a termination signal, or the terminal
+/// disappearing. Returns `130` on a signal, `0` otherwise.
 pub fn run(mut app: App) -> std::io::Result<i32> {
     init_terminal()?;
     let mut terminal =
@@ -580,28 +655,47 @@ pub fn run(mut app: App) -> std::io::Result<i32> {
     }));
 
     loop {
-        app.drain();
-        terminal.draw(|frame| ui::draw(frame, &mut app))?;
-
-        if app.quit {
-            break;
-        }
         if crate::signal::interrupted() {
             app.cancel_current();
             break;
         }
 
-        if event::poll(Duration::from_millis(50))?
-            && let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-        {
-            app.handle_key(key);
-            // Drain already-queued keys so a paste does not lag a frame.
-            while event::poll(Duration::ZERO)? {
-                match event::read()? {
-                    Event::Key(key) if key.kind == KeyEventKind::Press => app.handle_key(key),
-                    Event::Resize(_, _) => {}
-                    _ => {}
+        app.drain();
+        if let Err(err) = terminal.draw(|frame| ui::draw(frame, &mut app)) {
+            if is_terminal_gone(&err) {
+                app.cancel_current();
+                break;
+            }
+            return Err(err);
+        }
+
+        if app.quit {
+            break;
+        }
+
+        match wait_for_input(Duration::from_millis(50))? {
+            InputWait::Hangup => {
+                app.cancel_current();
+                break;
+            }
+            InputWait::Timeout => {}
+            InputWait::Ready => {
+                // Our poll said readable, so crossterm cannot block here.
+                if event::poll(Duration::ZERO)?
+                    && let Event::Key(key) = event::read()?
+                    && key.kind == KeyEventKind::Press
+                {
+                    app.handle_key(key);
+                }
+                // Drain already-queued keys so a paste does not lag a frame.
+                while event::poll(Duration::ZERO)? {
+                    match event::read()? {
+                        Event::Key(key) if key.kind == KeyEventKind::Press => {
+                            app.handle_key(key);
+                        }
+                        Event::Resize(_, _) => {}
+                        _ => {}
+                    }
                 }
             }
         }
@@ -616,6 +710,42 @@ mod tests {
     use super::*;
     use crate::config::TransportUsed;
     use crate::model::{ErrorKind, Gpu, HostResult, HostStatus, ProbeErrorInfo, Process, State};
+
+    #[cfg(unix)]
+    #[test]
+    fn hangup_revents_recognizes_hup_err_nval() {
+        assert!(hangup_revents(libc::POLLHUP));
+        assert!(hangup_revents(libc::POLLIN | libc::POLLHUP));
+        assert!(hangup_revents(libc::POLLERR));
+        assert!(hangup_revents(libc::POLLNVAL));
+        assert!(!hangup_revents(libc::POLLIN));
+        assert!(!hangup_revents(0));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn poll_fd_tracks_open_and_closed_pipe_writer() {
+        use std::os::fd::FromRawFd;
+
+        let mut fds = [0; 2];
+        // SAFETY: `fds` has room for two descriptors.
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        // SAFETY: both fds came from `pipe` and are owned here.
+        let read = unsafe { std::fs::File::from_raw_fd(fds[0]) };
+        let write = unsafe { std::fs::File::from_raw_fd(fds[1]) };
+
+        assert_eq!(
+            poll_fd(read.as_raw_fd(), Duration::from_millis(10)).unwrap(),
+            InputWait::Timeout,
+            "an open pipe with no data must time out"
+        );
+        drop(write);
+        assert_eq!(
+            poll_fd(read.as_raw_fd(), Duration::from_millis(10)).unwrap(),
+            InputWait::Hangup,
+            "a closed writer must report POLLHUP"
+        );
+    }
 
     fn meta(host: &str) -> HostMeta {
         HostMeta {

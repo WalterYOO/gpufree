@@ -10,7 +10,7 @@ gpufree 4090-1 gpu06              # 位置参数也可以
 
 ## 状态
 
-**M1–M3 已实现，独立评审 PASS。** `cargo fmt --check`、`clippy -D warnings`、194 个测试、release build 全部通过；真实 `4090-1` 冒烟正常。
+**M1–M3 已实现，独立评审 PASS。** `cargo fmt --check`、`clippy -D warnings`、197 个测试、release build 全部通过；真实 `4090-1` 冒烟正常。
 
 - 设计稿：[`docs/DESIGN.md`](docs/DESIGN.md)
 - 独立验收计划：[`docs/reviews/codex-m1-m3-plan.md`](docs/reviews/codex-m1-m3-plan.md)
@@ -27,6 +27,7 @@ gpufree 4090-1 gpu06              # 位置参数也可以
 - **单机详情**：`enter` 查看该机 GPU 全字段与计算进程（复用同一轮探测结果，不额外 ssh）。
 - **空闲判定保守**：无 compute 进程、已用显存 ≤512 MiB、利用率 ≤10%，两次采样取最差。
 - **坏机器不拖垮整批**：每台独立超时、进程组 kill、错误分类进 JSON。
+- **终端消失就退出**：关闭窗口、kill tmux session、ssh 断开时取消全部探测并退出，不留 100% CPU 的孤儿进程（A29）。
 - **预设即 ssh 别名**：不复制 IP/端口/用户，不制造第二份拓扑真相。
 
 ## 构建
