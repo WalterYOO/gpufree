@@ -1,0 +1,10 @@
+#!/bin/sh
+# Fake ssh that is executable but `ssh -V` exits non-zero (A28/DOC-04b).
+case "$1" in
+    -V)
+        echo "ssh: error while loading shared libraries: libcrypto.so.3" >&2
+        exit 1
+        ;;
+esac
+cat > /dev/null
+exit 0

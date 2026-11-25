@@ -10,11 +10,12 @@ gpufree 4090-1 gpu06              # 位置参数也可以
 
 ## 状态
 
-**设计已定稿，代码待实现。** 本仓库包含设计稿、评审记录、配置示例和 Rust 构建骨架。
+**M1–M3 已实现，独立评审 PASS。** `cargo fmt --check`、`clippy -D warnings`、194 个测试、release build 全部通过；真实 `4090-1` 冒烟正常。
 
 - 设计稿：[`docs/DESIGN.md`](docs/DESIGN.md)
+- 独立验收计划：[`docs/reviews/codex-m1-m3-plan.md`](docs/reviews/codex-m1-m3-plan.md)
+- 审查与整改记录：[`docs/reviews/codex-m1-m3-review.md`](docs/reviews/codex-m1-m3-review.md)
 - 初稿：[`docs/design-draft-v0.md`](docs/design-draft-v0.md)
-- 评审与签核：[`docs/reviews/`](docs/reviews/)
 - 配置示例：[`config.example.toml`](config.example.toml)
 
 ## 核心设计
@@ -50,25 +51,29 @@ cp config.example.toml ~/.config/gpufree/config.toml
 `config.example.toml` 已按本机 ssh 拓扑预置 `company`、`hk-h20`、`h100`、`lab`、`jinan` 五组。
 默认 `transport = "direct"`；在外网时把 preset 改成 `"remote"`（走 `-remote` 别名）或显式开启 `"auto"`。
 
-## 计划
+## 里程碑
 
-| 阶段 | 内容 |
-|---|---|
-| M1 | 配置 + 探测 + JSON/表格 |
-| M2 | 终端面板 + 搜索/过滤/取消 + 单机详情 |
-| M3 | doctor + init + transport auto |
-| v2 | 缓存、watch/ndjson、partial、面板切 preset 等 |
+| 阶段 | 内容 | 状态 |
+|---|---|---|
+| M1 | 配置 + 探测 + JSON/表格 | 完成 |
+| M2 | 终端面板 + 搜索/过滤/取消 + 单机详情 | 完成 |
+| M3 | doctor + init + transport auto | 完成 |
+| v2 | 缓存、watch/ndjson、partial、面板切 preset 等 | 未开始 |
 
 ## 目录
 
 ```
 src/main.rs         CLI 入口
+src/run.rs          子命令、来源解析、输出模式、退出码
 src/cli.rs          clap 定义
-src/config.rs       配置与 preset
-src/probe/          ssh 执行、脚本模板、解析
-src/model.rs        数据模型与状态判定
-src/output/         json / table
-src/tui/            终端面板
+src/config.rs       配置、preset、transport 校验
+src/signal.rs       SIGINT/SIGTERM 统一取消
+src/model.rs        数据模型与 free/busy/unknown 判定
+src/probe/          ssh 进程管理、脚本模板、解析、transport
+src/output/         json / table / 控制字符清理
+src/tui/            面板 App、渲染、过滤
 src/doctor.rs       自检
+tests/              CLI 集成测试与 JSON golden
+testdata/           fake-ssh 等测试夹具
 docs/               设计稿与评审
 ```

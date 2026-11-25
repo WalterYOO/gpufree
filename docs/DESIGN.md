@@ -2,11 +2,12 @@
 
 > 一条命令看清一组服务器的 GPU 空闲情况：`--json` 给脚本，TTY 下开一个可检索的终端面板。
 
-- 版本：v1.2
+- 版本：v1.3
 - 日期：2026-11-25
-- 状态：设计定稿，待实现
+- 状态：设计定稿，实现中
 - 变更：用户指定 Rust；进程管理、TUI、依赖选型随之调整，SSH 协议、空闲判定、JSON schema、v1 范围不变
 - v1.2 变更：用户评审补充 TUI 每机空闲小计与单机详情页（R5 / §8.1 / §8.5 / D20）；探测层与 JSON 不变
+- v1.3 变更：独立审查提出 25 处歧义，§16 给出最终实现口径（A1–A28，含首轮审查补遗）；`output_limit` 错误分类；示例配置修正
 
 ---
 
@@ -345,8 +346,11 @@ echo '@@END'
 | `nvidia_smi_missing` | `@@NOGPU=2`（有 /dev/nvidia0 但无工具） | false |
 | `nvidia_smi_failed` | GPU rc≠0 | true |
 | `parse_error` | 分节结构不可解析 | false |
+| `output_limit` | stdout 或 stderr 单流超过 8 MiB 被 kill | false |
 | `internal_error` | 探测线程 panic（catch_unwind 兜底） | true |
 | `unknown` | 其他 | false |
+
+重复的 `@@GPU` 段视为“分节结构不可解析”，归 `parse_error`，不得降级成 `nvidia_smi_failed`。
 
 ---
 
@@ -563,7 +567,7 @@ v1 明确不做：面板内切 preset、复制到剪贴板、多选刷新。
 `gpufree doctor`：
 
 1. 配置解析、preset 校验（别名是否存在、`remote_aliases` 是否齐全）。
-2. `ssh -V`、`ssh_binary` 可执行性、`ssh -G` 解析结果。
+2. `ssh -V`、`ssh_binary` 可执行性、`ssh -G` 解析结果；任何一项失败（含 `ssh -V` 非零或 `ssh -G` 失败）都计入 doctor 失败。
 3. 每个 preset 的 transport 判定（direct/remote、最终 host:port）。
 4. `--probe` 时真连：nvidia-smi、驱动版本、compute-apps 权限、MIG 状态。
 5. 明确提示 `BatchMode` 下无法通过的主机（需要密码或 2FA）。
@@ -578,6 +582,7 @@ v1 明确不做：面板内切 preset、复制到剪贴板、多选刷新。
 - 参数经 `Command` 直传，不拼本地 shell 字符串；远端脚本固定，无用户输入插值。
 - 单 host 输出上限 8 MiB；超限 kill。
 - 不读取、不打印任何密钥内容。
+- 远端返回的 hostname / GPU 名称 / 进程名 / 错误文本在写入表格或 TUI 前剥离 C0/C1 控制字符（含 ESC/OSC/BEL），防止终端控制序列注入；JSON 由序列化器转义。
 - 取消/超时/退出都 kill 进程组，避免遗留 ssh 子进程。
 
 ---
@@ -661,3 +666,40 @@ v1 明确不做：面板内切 preset、复制到剪贴板、多选刷新。
 5. MIG 实例级容量与归属。
 6. 历史快照 / 「哪台一直空」趋势。
 7. Windows 主机（`4090-1win`）。
+
+---
+
+## 16. v1.3 实现口径（歧义裁决）
+
+> 2026-11-25 独立审查提出 25 处规格空白。以下为最终口径，**优先于前文的示例与措辞**；JSON 键只增不删。
+
+| # | 口径 |
+|---|---|
+| A1 | **JSON 键始终存在**，N/A 用 `null`。host 对象键：`host/resolved_alias/transport_used/status/probed_at/duration_ms/hostname/load1/cpus/fields_complete/processes_complete/note/gpus/error`。ok 时 `error=null`；error host 的 `hostname/load1/cpus=null`、`fields_complete=processes_complete=false`、`note=null`；`no_gpu` 时 `fields_complete=processes_complete=true`、`note="no_gpu"`、`error=null`。GPU 对象键：`index/uuid/name/driver/mig/compute_mode/memory_total_mb/memory_used_mb/memory_free_mb/util_pct/temp_c/state/reason/processes`；free/busy 时 `reason=null`。 |
+| A2 | `memory_free_mb` 取两次采样的 `min(memory.free)`，原样上报；NVML 的 free 可能小于 `total-used`（保留显存），不强行按差值改写。状态判定只用 used/util/进程。 |
+| A3 | 状态优先级：MIG → `unknown(mig)`；`compute_mode=Prohibited` → `unknown(compute_prohibited)`；关键字段缺失 → `unknown`；进程查询失败且 used/util 未达 busy 阈值 → `unknown(no_process_data)`；然后 busy（有进程或超阈值）；否则 free。**unknown 原因优先于 busy。** |
+| A4 | `--free-only` 只过滤 `hosts` 数组：保留至少一张 free 卡的 host，移除 error / no_gpu / 全 busy host；`summary.hosts_shown = hosts.len()`；`hosts_total/ok/error` 与 `gpus_*` 仍按完整探测结果统计；退出码不受影响。 |
+| A5 | stdout 与 stderr **各自**上限 8 MiB；单流超限即 kill，该 host 记 `output_limit`（retryable=false）。 |
+| A6 | 工具退出码：`doctor` 0=全部通过、1=有检查失败（含 `--probe` 的 host 失败）、2=配置无法解析。`init` 0=创建成功或已存在且未改动（stderr 提示）、2=IO/写失败。`presets list`=0；`presets validate` 0=合法、1=配置内容不合法、2=TOML/用法错误。 |
+| A7 | Help 态：`?` 开关；`esc` 关闭；`q` 关闭 Help 而非退出程序。关闭后回到原状态，保留选择/过滤。 |
+| A8 | 探测前先解析全部 host 的 transport。auto 直连失败且 `remote_aliases` 缺映射 → 退出 2，指明 preset+host，不启动任何探测。 |
+| A9 | 显式 `--format table` / `--format json` 决定输出，TTY 下也不进 TUI；只有未指定格式且 stdin+stdout 都是 TTY 才进 TUI。 |
+| A10 | TUI 条件 = stdin 与 stdout 均为 TTY；否则表格。 |
+| A11 | 进程对象键：`gpu_uuid/pid/user/process_name/used_memory_mb`。`pid`、`used_memory_mb` 可为 null；`user` 可为 null（ps 失败）；进程名原样 UTF-8。 |
+| A12 | `probed_at` = 探测开始时间（spawn ssh 之前），RFC3339 带偏移；`duration_ms` 为耗时；`probed_at + duration` 约等于完成时间，且不晚于 `generated_at`。 |
+| A13 | `samples` 1..=10，`sample_interval` 100ms..=10s；越界 → 退出 2。`samples=1` 合法（不做两样本最差）。 |
+| A14 | `parallel` 与 `parallel_remote` 各 1..=16，且两者之和 ≤16；越界 → 退出 2，不静默钳制。 |
+| A15 | 显式 `--color always` 优先于 `NO_COLOR`；`auto` 时 `NO_COLOR` 关闭颜色；`never` 永远无颜色。 |
+| A16 | 行级过滤：某 GPU 行可见，当且仅当每个关键词都匹配 host 或该行（host/GPU 名/用户/进程名）。命中 host 时该 host 全部卡可见。每机 `空闲/总数` 始终按完整 GPU 列表统计。 |
+| A17 | 重复 host 按输入顺序去重（保留首次出现），不重复探测；JSON 每个 host 一条；preset 顺序稳定。 |
+| A18 | `no_gpu` 的 host 字段见 A1；`hostname/load1/cpus` 按实际可得值，缺失为 null。 |
+| A19 | `transport_used` 指实际使用的别名路径：用原始别名 = `direct`，用 `remote_aliases` = `remote`；不表示 ssh config 内部是否还有 ProxyJump。 |
+| A20 | `compute-apps` 失败 → `processes=null`、`processes_complete=false`；仅 `ps` 用户名查询失败 → 进程列表保留、`user=null`、`processes_complete=false`；状态仍按阈值/进程判定，不因仅 ps 失败判 unknown。 |
+| A21 | hosts-file 一行一个；trim 前后空白；忽略空行与首个非空字符为 `#` 的行；支持 CRLF 与 UTF-8 BOM；不支持行尾注释。`--hosts` 逗号串逐项 trim、丢弃空项。 |
+| A22 | 任何 host / alias 以 `-` 开头 → 退出 2，不传给 ssh（防选项注入）。 |
+| A23 | 两轮 GPU query 都失败 → host `status=error`、`kind=nvidia_smi_failed`、`gpus=[]`、`retryable=true`；不生成 unknown GPU 行。§6 首行按此理解。 |
+| A24 | `[settings]` 不接受 `prefix`；示例配置已删除该注释。`prefix` 只在 preset 级。 |
+| A25 | §5.2 脚本中的 `while ... -lt 2` / `sleep 1` 是伪代码；实际脚本必须按配置写入 `samples` / `sample_interval`；亚秒间隔写成 `sleep 0.5` 这类小数。 |
+| A26 | 表格/TUI 渲染前必须剥离远端字符串中的 C0/C1 控制字符（ESC/OSC/BEL 等），JSON 保持原值由 serde 转义。 |
+| A27 | 重复的 `@@GPU` 段 → `parse_error`（retryable=false），不得归类为 `nvidia_smi_failed`。 |
+| A28 | doctor 的 `ssh -V` 非零退出同样计为检查失败（doctor 返回 1），不能输出 “all checks passed”。 |

@@ -1,0 +1,14 @@
+#!/bin/sh
+# Fake ssh whose `ssh -G` fails (doctor DOC-03).
+case "$1" in
+    -V)
+        echo "OpenSSH_9.9p1 Fake, OpenSSL 3.0.0" >&2
+        exit 0
+        ;;
+    -G)
+        echo "Could not resolve hostname $2: nodename nor servname provided" >&2
+        exit 255
+        ;;
+esac
+cat > /dev/null
+exit 0

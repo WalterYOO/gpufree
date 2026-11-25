@@ -15,7 +15,6 @@ ssh_binary      = "ssh"    # 测试时可指向 fake-ssh
 mux             = true     # ControlMaster 复用
 control_persist = "60s"    # 复用窗口；设为 0 表示关闭复用（不会传给 ssh）
 color           = "auto"   # auto | always | never
-# prefix        = ""       # 远端前缀，HPC 上可为 "module load cuda/12.4 &&"
 
 [settings.free]
 used_mem_max_mb = 512      # 已用显存 ≤ 此值
@@ -80,3 +79,4 @@ hosts = ["p100-0", "p100-1", "t4-0", "p4-0", "p4-1",
 description = "济南 T4 / V100"
 transport   = "direct"
 hosts = ["t4-jinan-0", "t4-jinan-1", "v100-jinan-0", "v100-jinan-1"]
+# prefix    = "module load cuda/12.4 &&"   # 仅 preset 级，拼在远端脚本前

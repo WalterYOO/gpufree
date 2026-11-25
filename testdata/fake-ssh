@@ -1,0 +1,278 @@
+#!/bin/sh
+# Fake ssh used by the integration tests. Behaviour is selected by the host
+# alias (the argument before `sh -s`). It never touches the network.
+#
+# Environment:
+#   FAKE_SSH_SCRIPT_OUT  write the script received on stdin here
+#   FAKE_SSH_ARGS_OUT    write the argv (one per line) here
+#   FAKE_SSH_PIDFILE     write "<shell pid> <child pid>" here (slow modes)
+
+if [ -n "$FAKE_SSH_ARGS_OUT" ]; then
+    printf '%s\n' "$@" > "$FAKE_SSH_ARGS_OUT"
+fi
+
+case "$1" in
+    -V)
+        echo "OpenSSH_9.9p1 Fake, OpenSSL 3.0.0" >&2
+        exit 0
+        ;;
+    -G)
+        alias="$2"
+        echo "host $alias"
+        echo "hostname $alias.example"
+        echo "user testuser"
+        echo "port 22"
+        case "$alias" in
+            ok-remote|gpu06r|4090-1r|ar|jump*)
+                echo "proxyjump jump.example"
+                ;;
+            *)
+                echo "proxyjump none"
+                ;;
+        esac
+        echo "proxycommand none"
+        exit 0
+        ;;
+esac
+
+# The alias is the argument three from the end: `<alias> sh -s`.
+prev=""
+prev2=""
+prev3=""
+for arg in "$@"; do
+    prev3="$prev2"
+    prev2="$prev"
+    prev="$arg"
+done
+alias="$prev3"
+
+# Always consume stdin: this is what proves the client did not use -n.
+if [ -n "$FAKE_SSH_SCRIPT_OUT" ]; then
+    cat > "$FAKE_SSH_SCRIPT_OUT"
+else
+    cat > /dev/null
+fi
+
+emit_header() {
+    echo '@@HOST'
+    echo "$alias"
+    echo '0.42 0.30 0.20 1/100 12345'
+    echo '64'
+    echo '@@NOGPU'
+    echo '0'
+    echo '@@MIG'
+    echo "$1"
+}
+
+emit_empty_proc() {
+    echo '@@PROC'
+    echo ''
+    echo '@@PROC_RC=0'
+    echo '@@PS'
+    echo '@@END'
+}
+
+case "$alias" in
+    slow|timeout)
+        # Ignore SIGTERM in both the shell and its child so the client has to
+        # escalate to SIGKILL; the inner loop keeps running while individual
+        # `sleep` children are killed by the group signal.
+        trap '' TERM
+        sh -c 'while :; do sleep 1; done' &
+        child=$!
+        if [ -n "$FAKE_SSH_PIDFILE" ]; then
+            echo "$$ $child" > "$FAKE_SSH_PIDFILE"
+        fi
+        wait "$child"
+        exit 0
+        ;;
+    authfail)
+        echo "Permission denied (publickey)." >&2
+        exit 255
+        ;;
+    hostkey)
+        echo "Host key verification failed." >&2
+        exit 255
+        ;;
+    unreach)
+        echo "ssh: connect to host 192.0.2.1 port 22: Connection timed out" >&2
+        exit 255
+        ;;
+esac
+
+case "$alias" in
+    nogpu1)
+        echo '@@HOST'
+        echo 'nas'
+        echo '0.10 0.10 0.10 1/100 1'
+        echo '8'
+        echo '@@NOGPU'
+        echo '1'
+        echo '@@END'
+        ;;
+    nogpu2)
+        echo '@@HOST'
+        echo 'broken'
+        echo '0.10 0.10 0.10 1/100 1'
+        echo '8'
+        echo '@@NOGPU'
+        echo '2'
+        echo '@@END'
+        ;;
+    # The real script's early-exit shape: @@NOGPU 1|2 and nothing else.
+    nogpureal)
+        echo '@@HOST'
+        echo 'ong'
+        echo '0.1 0.1 0.1 1/1 1'
+        echo '8'
+        echo '@@NOGPU'
+        echo '1'
+        ;;
+    nogpureal2)
+        echo '@@HOST'
+        echo 'broken'
+        echo '0.1 0.1 0.1 1/1 1'
+        echo '8'
+        echo '@@NOGPU'
+        echo '2'
+        ;;
+    dup)
+        emit_header 0
+        echo '@@GPU'
+        echo '0, GPU-aaaa, NVIDIA RTX 4090, 24564, 1, 24563, 0, 33, Default, 570.86.15'
+        echo '@@GPU_RC=0'
+        echo '@@GPU'
+        echo '1, GPU-bbbb, NVIDIA RTX 4090, 24564, 1, 24563, 0, 33, Default, 570.86.15'
+        echo '@@GPU_RC=0'
+        emit_empty_proc
+        ;;
+    quoted)
+        emit_header 0
+        echo '@@GPU'
+        echo '0, GPU-q, NVIDIA A100, 81920, 1024, 80896, 15, 40, Default, 570.0'
+        echo '@@GPU_RC=0'
+        echo '@@PROC'
+        echo 'GPU-q, 444, "python train.py --name ""a,b""", 2048'
+        echo '@@PROC_RC=0'
+        echo '@@PS'
+        echo '444 dave'
+        echo '@@END'
+        ;;
+    evil)
+        emit_header 0
+        printf '@@GPU\n'
+        printf '0, GPU-evil, EVIL\033]0;PWNED\007, 24564, 0, 24564, 0, 33, Default, 570.0\n'
+        echo '@@GPU_RC=0'
+        emit_empty_proc
+        ;;
+    drivererr)
+        emit_header 0
+        echo '@@GPU'
+        echo 'NVIDIA-SMI has failed because it could not communicate with the driver'
+        echo '@@GPU_RC=9'
+        echo '@@PROC'
+        echo ''
+        echo '@@PROC_RC=0'
+        echo '@@PS'
+        echo '@@END'
+        ;;
+    noproc)
+        emit_header 0
+        echo '@@GPU'
+        echo '0, GPU-aaaa, NVIDIA RTX 4090, 24564, 1, 24563, 0, 33, Default, 570.86.15'
+        echo '@@GPU_RC=0'
+        echo '@@PROC'
+        echo 'permission denied'
+        echo '@@PROC_RC=1'
+        echo '@@PS'
+        echo '@@END'
+        ;;
+    mig)
+        emit_header 1
+        echo '@@GPU'
+        echo '0, GPU-mig0, NVIDIA H20-3e, 143771, 0, 143771, 0, 29, Default, 570.86.15'
+        echo '@@GPU_RC=0'
+        echo '@@PROC'
+        echo ''
+        echo '@@PROC_RC=0'
+        echo '@@PS'
+        echo '@@END'
+        ;;
+    partial)
+        emit_header 0
+        echo '@@GPU'
+        echo '@@FALLBACK=1'
+        echo '0, GPU-part, NVIDIA P100, 16384, 100, 16284, 3'
+        echo '@@GPU_RC=0'
+        emit_empty_proc
+        ;;
+    twosample)
+        emit_header 0
+        echo '@@GPU'
+        echo '0, GPU-two, NVIDIA H20-3e, 143771, 1, 143770, 0, 30, Default, 570.86.15'
+        echo '@@GPU_RC=0'
+        echo '0, GPU-two, NVIDIA H20-3e, 143771, 900, 142871, 50, 31, Default, 570.86.15'
+        echo '@@GPU_RC=0'
+        emit_empty_proc
+        ;;
+    comma)
+        emit_header 0
+        echo '@@GPU'
+        echo '0, GPU-cccc, NVIDIA A100, 80GB, 81920, 1024, 80896, 15, 40, Default, 570.0'
+        echo '@@GPU_RC=0'
+        echo '@@PROC'
+        echo 'GPU-cccc, 333, python -c foo, bar, 2048'
+        echo '@@PROC_RC=0'
+        echo '@@PS'
+        echo '333 carol'
+        echo '@@END'
+        ;;
+    huge)
+        emit_header 0
+        echo '@@GPU'
+        head -c 9000000 /dev/zero | tr '\0' 'x'
+        echo ''
+        echo '@@GPU_RC=0'
+        echo '@@END'
+        ;;
+    parsefail)
+        emit_header 0
+        echo '@@GPU'
+        echo '0, GPU-aaaa, NVIDIA RTX 4090, 24564, 1, 24563, 0, 33, Default, 570.86.15'
+        echo '@@GPU_RC=0'
+        # no @@END
+        ;;
+    free)
+        emit_header 0
+        echo '@@GPU'
+        echo '0, GPU-free, NVIDIA RTX 4090, 24576, 0, 24576, 0, 35, Default, 570.86.15'
+        echo '@@GPU_RC=0'
+        emit_empty_proc
+        ;;
+    busy)
+        emit_header 0
+        echo '@@GPU'
+        echo '0, GPU-busy, NVIDIA RTX 4090, 24576, 20480, 4096, 99, 70, Default, 570.86.15'
+        echo '@@GPU_RC=0'
+        echo '@@PROC'
+        echo 'GPU-busy, 222, python job.py, 20480'
+        echo '@@PROC_RC=0'
+        echo '@@PS'
+        echo '222 bob'
+        echo '@@END'
+        ;;
+    *)
+        # default: one free and one busy GPU, two samples worth of data shape
+        emit_header 0
+        echo '@@GPU'
+        echo '0, GPU-aaaa, NVIDIA RTX 4090, 24564, 1, 24563, 0, 33, Default, 570.86.15'
+        echo '1, GPU-bbbb, NVIDIA RTX 4090, 24564, 12288, 12276, 87, 71, Default, 570.86.15'
+        echo '@@GPU_RC=0'
+        echo '@@PROC'
+        echo 'GPU-bbbb, 12345, python train.py, 12000'
+        echo '@@PROC_RC=0'
+        echo '@@PS'
+        echo '12345 alice'
+        echo '@@END'
+        ;;
+esac
