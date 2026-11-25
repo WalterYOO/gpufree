@@ -1,0 +1,82 @@
+# gpufree 配置示例
+# 默认路径：${XDG_CONFIG_HOME:-~/.config}/gpufree/config.toml
+# 首次可使用：gpufree init
+
+default_preset = "company"
+
+[settings]
+parallel        = 8        # 直连 host 并发
+parallel_remote = 4        # 经跳板 host 并发（每台占两条链路）
+connect_timeout = "6s"     # 每一跳的建连超时
+total_timeout   = "15s"    # 单 host 总超时（含多跳）
+samples         = 2        # 采样次数，取最差；在远端一次会话内完成
+sample_interval = "1s"     # 不低于 NVML 刷新窗口
+ssh_binary      = "ssh"    # 测试时可指向 fake-ssh
+mux             = true     # ControlMaster 复用
+control_persist = "60s"    # 复用窗口；设为 0 表示关闭复用（不会传给 ssh）
+color           = "auto"   # auto | always | never
+# prefix        = ""       # 远端前缀，HPC 上可为 "module load cuda/12.4 &&"
+
+[settings.free]
+used_mem_max_mb = 512      # 已用显存 ≤ 此值
+util_max_pct    = 10       # 且利用率 ≤ 此值
+                           # 且没有 compute 进程，才算 free
+
+# ---------------------------------------------------------------------------
+# 公司内网
+# 在公司用 direct；出差/在家改成 "remote"，或临时 --transport remote
+# ---------------------------------------------------------------------------
+[presets.company]
+description = "公司内网 4090 / H20 / 3090"
+transport   = "direct"
+hosts = ["4090-1", "4090-0", "3090-0", "h20-5", "h20-6-root"]
+
+[presets.company.remote_aliases]
+4090-1     = "4090-1r"
+3090-0     = "3090-0-remote"
+h20-5      = "h20-5-remote"
+h20-6-root = "h20-6-root-remote"
+
+# ---------------------------------------------------------------------------
+# 香港 H20 十台（外网，走 remote 别名）
+# ---------------------------------------------------------------------------
+[presets.hk-h20]
+description = "香港 H20 ×10"
+transport   = "remote"
+hosts = ["gpu01", "gpu02", "gpu03", "gpu04", "gpu05",
+         "gpu06", "gpu07", "gpu08", "gpu09", "gpu10"]
+
+[presets.hk-h20.remote_aliases]
+gpu01 = "gpu01r"
+gpu02 = "gpu02r"
+gpu03 = "gpu03r"
+gpu04 = "gpu04r"
+gpu05 = "gpu05r"
+gpu06 = "gpu06r"
+gpu07 = "gpu07r"
+gpu08 = "gpu08r"
+gpu09 = "gpu09r"
+gpu10 = "gpu10r"
+
+# ---------------------------------------------------------------------------
+# H100 集群（经 jump-c 跳板）
+# ---------------------------------------------------------------------------
+[presets.h100]
+description = "H100 ×8"
+transport   = "direct"
+hosts = ["h100-0", "h100-1-root", "h100-2-root", "h100-3-root",
+         "h100-4-root", "h100-5-root", "h100-6-root", "h100-7-root"]
+
+# ---------------------------------------------------------------------------
+# 其他实验室机器
+# ---------------------------------------------------------------------------
+[presets.lab]
+description = "P100 / T4 / P4 / A10 / L40 / A800"
+transport   = "direct"
+hosts = ["p100-0", "p100-1", "t4-0", "p4-0", "p4-1",
+         "a10-0", "a10-1", "l40-0-ailab", "l40-1", "a800-0"]
+
+[presets.jinan]
+description = "济南 T4 / V100"
+transport   = "direct"
+hosts = ["t4-jinan-0", "t4-jinan-1", "v100-jinan-0", "v100-jinan-1"]
