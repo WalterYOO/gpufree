@@ -1125,3 +1125,25 @@ fn doctor_uses_mux_by_default_for_the_probe_argv() {
     assert!(args.contains("ControlMaster=auto"), "{args}");
     assert!(args.contains("ControlPath="), "{args}");
 }
+
+#[test]
+fn json_wire_format_escapes_c0_and_keeps_raw_values() {
+    // A26: JSON is data, not terminal output. serde escapes C0 (`\u001b`), the
+    // document carries no raw ESC byte, and the decoded value is unchanged.
+    let dir = TempDir::new("jsonctl");
+    let cfg = config(&dir, "");
+    let out = run(gpufree(&cfg).args(["--host", "evil", "--json"]));
+    assert_eq!(code(&out), 0, "stderr: {}", stderr(&out));
+
+    let wire = stdout(&out);
+    assert!(!wire.contains('\u{1b}'), "raw ESC in JSON: {wire:?}");
+    assert!(!wire.contains('\u{7}'), "raw BEL in JSON: {wire:?}");
+    assert!(wire.contains("\\u001b"), "{wire:?}");
+    assert!(wire.contains("\\u0007"), "{wire:?}");
+
+    let value = json(&out);
+    assert_eq!(
+        value["hosts"][0]["gpus"][0]["name"],
+        "EVIL\u{1b}]0;PWNED\u{7}"
+    );
+}

@@ -589,7 +589,7 @@ v1 明确不做：面板内切 preset、复制到剪贴板、多选刷新。
 - 参数经 `Command` 直传，不拼本地 shell 字符串；远端脚本固定，无用户输入插值。
 - 单 host 输出上限 8 MiB；超限 kill。
 - 不读取、不打印任何密钥内容。
-- 远端返回的 hostname / GPU 名称 / 进程名 / 错误文本在写入表格或 TUI 前剥离 C0/C1 控制字符（含 ESC/OSC/BEL），防止终端控制序列注入；JSON 由序列化器转义。
+- 远端返回的 hostname / GPU 名称 / 进程名 / 错误文本在写入表格或 TUI 前剥离 C0/C1 控制字符（含 ESC/OSC/BEL），防止终端控制序列注入。JSON 保留原文：serde 只按 JSON 规范转义 C0（写成 `\u001b` 等），DEL/C1 原样保留。因此把 JSON 文档直接打到 UTF-8 终端是安全的，但下游若解码后再写终端（如 `jq -r`），需自行过滤（A26）。
 - 取消/超时/退出都 kill 进程组，避免遗留 ssh 子进程。
 
 ---
@@ -708,7 +708,7 @@ v1 明确不做：面板内切 preset、复制到剪贴板、多选刷新。
 | A23 | 两轮 GPU query 都失败 → host `status=error`、`kind=nvidia_smi_failed`、`gpus=[]`、`retryable=true`；不生成 unknown GPU 行。§6 首行按此理解。 |
 | A24 | `[settings]` 不接受 `prefix`；示例配置已删除该注释。`prefix` 只在 preset 级。 |
 | A25 | §5.2 脚本中的 `while ... -lt 2` / `sleep 1` 是伪代码；实际脚本必须按配置写入 `samples` / `sample_interval`；亚秒间隔写成 `sleep 0.5` 这类小数。 |
-| A26 | 表格/TUI 渲染前必须剥离远端字符串中的 C0/C1 控制字符（ESC/OSC/BEL 等），JSON 保持原值由 serde 转义。 |
+| A26 | 表格/TUI 渲染前必须剥离远端字符串中的 C0/C1 控制字符（ESC/OSC/BEL 等），JSON 保持原值、不做清洗：serde 仅转义 C0，DEL/C1 原样保留；下游解码后写终端需自行过滤。 |
 | A27 | 重复的 `@@GPU` 段 → `parse_error`（retryable=false），不得归类为 `nvidia_smi_failed`。 |
 | A28 | doctor 的 `ssh -V` 非零退出同样计为检查失败（doctor 返回 1），不能输出 “all checks passed”。 |
 | A29 | TUI 必须自己 `poll(2)` 等 stdin 并识别 `POLLHUP`/`POLLERR`/`POLLNVAL`，不能把等待交给 `crossterm::event::poll`：crossterm 0.29 的 mio 事件源读到 EOF（`Ok(0)`）时死循环，pty 消失后进程会 100% CPU 泄漏且 ssh 子进程不收。写 stdout 遇到 `EIO`/`EPIPE` 同样按终端消失处理，cancel 探测后以 0 退出。 |
