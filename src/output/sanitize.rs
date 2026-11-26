@@ -3,7 +3,8 @@
 //! Hostnames, GPU names, process names and error text come from a remote
 //! machine. Rendering them verbatim lets that machine move the cursor, retitle
 //! the terminal, or worse via OSC sequences. JSON keeps the raw value (serde
-//! escapes control characters); the table and TUI call [`clean`] first.
+//! escapes C0 only; DEL and C1 pass through); the table, TUI and doctor call
+//! [`clean`] first.
 
 /// Replacement for every C0 (0x00–0x1F), DEL (0x7F) and C1 (0x80–0x9F)
 /// character: a visible, width-1 glyph.

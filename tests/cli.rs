@@ -1009,8 +1009,9 @@ fn sigint_leaves_no_orphan_ssh_processes() {
     });
     assert!(gone, "orphan ssh/sleep processes remain: {pids:?}");
 }
+
 // ---------------------------------------------------------------------------
-// CLI robustness: broken stdout pipe, doctor --no-mux, raw JSON (A26)
+// CLI robustness: closed stdout pipe
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1041,7 +1042,13 @@ fn closed_stdout_pipe_exits_cleanly() {
 
     let mut stdout = child.stdout.take().expect("stdout pipe");
     let mut buf = [0u8; 64];
-    let _ = stdout.read(&mut buf);
+    let n = stdout.read(&mut buf).expect("read the first bytes");
+    assert!(n > 0, "expected output before the pipe was closed");
+    let prefix = String::from_utf8_lossy(&buf[..n]);
+    assert!(
+        prefix.contains("PRESET"),
+        "not the presets table header: {prefix:?}"
+    );
     drop(stdout);
 
     let output = child.wait_with_output().expect("wait for gpufree");
@@ -1058,6 +1065,11 @@ fn closed_stdout_pipe_exits_cleanly() {
     );
     assert!(!String::from_utf8_lossy(&output.stderr).contains("panicked"));
 }
+
+// ---------------------------------------------------------------------------
+// doctor --no-mux
+// ---------------------------------------------------------------------------
+
 /// `mux = true` plus a HOME with `.ssh`, so `build_args` takes the mux branch.
 fn mux_config(dir: &TempDir) -> PathBuf {
     fs::create_dir_all(dir.file(".ssh")).unwrap();
@@ -1125,6 +1137,10 @@ fn doctor_uses_mux_by_default_for_the_probe_argv() {
     assert!(args.contains("ControlMaster=auto"), "{args}");
     assert!(args.contains("ControlPath="), "{args}");
 }
+
+// ---------------------------------------------------------------------------
+// JSON keeps remote text raw (A26)
+// ---------------------------------------------------------------------------
 
 #[test]
 fn json_wire_format_escapes_c0_and_keeps_raw_values() {

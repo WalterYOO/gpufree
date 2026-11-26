@@ -2,11 +2,16 @@
 //!
 //! Rust ignores `SIGPIPE`, so writing to a pipe whose reader went away
 //! (`gpufree --json | head -1`) returns `EPIPE`; `println!`/`print!` panic on
-//! any write error. Every byte this program prints to stdout goes through this
-//! module instead: the first write error is remembered, later writes become
-//! no-ops, and [`finish`] turns the outcome into an exit code — a broken pipe
-//! is a normal, quiet exit 0; any other IO error is reported on stderr and
-//! exits 1.
+//! any write error. All user-facing batch output (JSON, the table, doctor,
+//! presets, init, completion summaries) goes through this module instead: the
+//! first write error is remembered, later writes become no-ops, and [`finish`]
+//! turns the outcome into an exit code — a broken pipe is a normal, quiet
+//! exit 0; any other IO error is reported on stderr and exits 1.
+//!
+//! Deliberately not routed through the sink: the TUI (crossterm draws directly
+//! and already treats EIO/EPIPE as the terminal vanishing), `completion
+//! __complete` (its BufWriter ignores write errors), and clap's
+//! `--help`/`--version` (clap itself ignores write errors).
 
 use std::fmt;
 use std::io::{self, IsTerminal, Write};
@@ -126,6 +131,8 @@ pub fn finish(code: i32) -> i32 {
 }
 
 /// `println!` for stdout that never panics; use for every user-facing line.
+/// Internal helper, not part of the public API.
+#[doc(hidden)]
 #[macro_export]
 macro_rules! outln {
     () => {
@@ -136,7 +143,8 @@ macro_rules! outln {
     };
 }
 
-/// `print!` for stdout that never panics.
+/// `print!` for stdout that never panics. Internal helper, not public API.
+#[doc(hidden)]
 #[macro_export]
 macro_rules! out {
     ($($arg:tt)*) => {
