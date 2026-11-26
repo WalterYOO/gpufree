@@ -1058,3 +1058,70 @@ fn closed_stdout_pipe_exits_cleanly() {
     );
     assert!(!String::from_utf8_lossy(&output.stderr).contains("panicked"));
 }
+/// `mux = true` plus a HOME with `.ssh`, so `build_args` takes the mux branch.
+fn mux_config(dir: &TempDir) -> PathBuf {
+    fs::create_dir_all(dir.file(".ssh")).unwrap();
+    write_raw(
+        dir,
+        "config.toml",
+        &format!(
+            "[settings]\n\
+             ssh_binary = {bin:?}\n\
+             mux = true\n\
+             sample_interval = \"100ms\"\n\
+             connect_timeout = \"1s\"\n\
+             total_timeout = \"5s\"\n\
+             \n\
+             [presets.p]\n\
+             hosts = [\"ok\"]\n",
+            bin = fake_ssh()
+        ),
+    )
+}
+
+#[test]
+fn doctor_applies_no_mux_to_the_probe_argv() {
+    let dir = TempDir::new("docmux");
+    let cfg = mux_config(&dir);
+    let args_path = dir.file("args.txt");
+    let out = run(gpufree(&cfg)
+        .args(["--no-mux", "doctor", "--probe"])
+        .env("HOME", &dir.path)
+        .env("FAKE_SSH_ARGS_OUT", &args_path));
+    assert_eq!(
+        code(&out),
+        0,
+        "stdout: {}\nstderr: {}",
+        stdout(&out),
+        stderr(&out)
+    );
+    let args = fs::read_to_string(&args_path).unwrap();
+    assert!(
+        args.lines().any(|arg| arg == "ControlMaster=no"),
+        "probe argv must disable mux: {args}"
+    );
+    assert!(!args.contains("ControlMaster=auto"), "{args}");
+    assert!(!args.contains("ControlPath=/"), "{args}");
+}
+
+#[test]
+fn doctor_uses_mux_by_default_for_the_probe_argv() {
+    // Control for the test above: proves the fixture can observe mux at all.
+    let dir = TempDir::new("docmuxon");
+    let cfg = mux_config(&dir);
+    let args_path = dir.file("args.txt");
+    let out = run(gpufree(&cfg)
+        .args(["doctor", "--probe"])
+        .env("HOME", &dir.path)
+        .env("FAKE_SSH_ARGS_OUT", &args_path));
+    assert_eq!(
+        code(&out),
+        0,
+        "stdout: {}\nstderr: {}",
+        stdout(&out),
+        stderr(&out)
+    );
+    let args = fs::read_to_string(&args_path).unwrap();
+    assert!(args.contains("ControlMaster=auto"), "{args}");
+    assert!(args.contains("ControlPath="), "{args}");
+}

@@ -122,7 +122,13 @@ fn cmd_doctor(cli: &Cli, probe: bool) -> i32 {
         }
     };
     crate::signal::install();
-    crate::doctor::run(&loaded.config, &loaded.path, loaded.present, probe, cli.utc)
+    // `--probe` builds the same ssh argv as a normal probe, so it must honour
+    // `--no-mux` too (cmd_probe / cmd_print_config already do).
+    let mut config: Config = loaded.config.clone();
+    if cli.no_mux {
+        config.settings.mux = false;
+    }
+    crate::doctor::run(&config, &loaded.path, loaded.present, probe, cli.utc)
 }
 
 fn cmd_print_config(cli: &Cli) -> i32 {
