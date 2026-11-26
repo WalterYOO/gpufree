@@ -145,6 +145,9 @@ GPU：`index`、`uuid`、`name`、`driver`、`mig`、`compute_mode`、`memory_to
 
 ## 常用 jq 配方（已在 fake-ssh 夹具上验证）
 
+配方会把远端返回的型号名、进程名、错误文本直接打到终端。远端输出不可信时，先过
+`gsub("\\p{Cc}"; "?")` 去掉 C0/DEL/C1；下面的错误消息与占用者配方已内置过滤。
+
 需要 ≥ N MiB 空闲显存的空卡：
 
 ```bash
@@ -199,7 +202,8 @@ gpufree --json | jq -r '.hosts[] | select(.status=="ok")
 
 ```bash
 gpufree --json | jq -r '.hosts[] | select(.status!="ok")
-  | [.host, .error.kind, (.error.retryable|tostring), .error.message] | @tsv'
+  | [.host, .error.kind, (.error.retryable|tostring),
+     (.error.message | gsub("\\p{Cc}"; "?"))] | @tsv'
 
 gpufree --json | jq -r '.hosts[] | .host as $h | .gpus[]
   | select(.state=="unknown") | [$h, (.index|tostring), (.reason // "?")] | @tsv'
@@ -211,7 +215,9 @@ gpufree --json | jq -r '.hosts[] | .host as $h | .gpus[]
 gpufree --json | jq -r '.hosts[] | .host as $h | .gpus[]
   | select(.state=="busy")
   | [$h, (.index|tostring)]
-    + [(.processes // [])[] | "\(.user // "?")/\(.process_name)"] | @tsv'
+    + [(.processes // [])[]
+       | "\(.user // "?" | gsub("\\p{Cc}"; "?"))/\(.process_name | gsub("\\p{Cc}"; "?"))"]
+  | @tsv'
 ```
 
 ## 典型任务
