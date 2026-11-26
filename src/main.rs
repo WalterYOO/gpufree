@@ -16,5 +16,8 @@ fn main() {
         std::process::exit(gpufree::completion::engine::complete_main_os(rest));
     }
     let cli = gpufree::cli::Cli::parse();
-    std::process::exit(gpufree::run::run(cli));
+    // Flush stdout and turn a closed pipe into a quiet exit 0 instead of a
+    // panic inside `println!`.
+    let code = gpufree::run::run(cli);
+    std::process::exit(gpufree::output::stream::finish(code));
 }

@@ -3,4 +3,5 @@
 
 pub mod json;
 pub mod sanitize;
+pub mod stream;
 pub mod table;

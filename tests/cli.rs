@@ -1009,3 +1009,157 @@ fn sigint_leaves_no_orphan_ssh_processes() {
     });
     assert!(gone, "orphan ssh/sleep processes remain: {pids:?}");
 }
+
+// ---------------------------------------------------------------------------
+// CLI robustness: closed stdout pipe
+// ---------------------------------------------------------------------------
+
+#[test]
+fn closed_stdout_pipe_exits_cleanly() {
+    use std::io::Read;
+
+    // `presets list` is pure formatting (no ssh), so 4000 rows are cheap and
+    // comfortably exceed any pipe buffer. The child therefore blocks writing
+    // once we stop reading, and closing the read end forces EPIPE.
+    let dir = TempDir::new("epipe");
+    let mut text = String::from("[settings]\nssh_binary = \"/usr/bin/false\"\n\n");
+    for i in 0..4000 {
+        text.push_str(&format!(
+            "[presets.p{i}]\nhosts = [\"h{i}\"]\ndescription = \"{}\"\n",
+            "x".repeat(40)
+        ));
+    }
+    let cfg = write_raw(&dir, "config.toml", &text);
+
+    let mut child = StdCommand::new(env!("CARGO_BIN_EXE_gpufree"))
+        .arg("--config")
+        .arg(&cfg)
+        .args(["presets", "list"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn gpufree");
+
+    let mut stdout = child.stdout.take().expect("stdout pipe");
+    let mut buf = [0u8; 64];
+    let n = stdout.read(&mut buf).expect("read the first bytes");
+    assert!(n > 0, "expected output before the pipe was closed");
+    let prefix = String::from_utf8_lossy(&buf[..n]);
+    assert!(
+        prefix.contains("PRESET"),
+        "not the presets table header: {prefix:?}"
+    );
+    drop(stdout);
+
+    let output = child.wait_with_output().expect("wait for gpufree");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "closed pipe must exit quietly, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "no panic or warning expected on EPIPE: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("panicked"));
+}
+
+// ---------------------------------------------------------------------------
+// doctor --no-mux
+// ---------------------------------------------------------------------------
+
+/// `mux = true` plus a HOME with `.ssh`, so `build_args` takes the mux branch.
+fn mux_config(dir: &TempDir) -> PathBuf {
+    fs::create_dir_all(dir.file(".ssh")).unwrap();
+    write_raw(
+        dir,
+        "config.toml",
+        &format!(
+            "[settings]\n\
+             ssh_binary = {bin:?}\n\
+             mux = true\n\
+             sample_interval = \"100ms\"\n\
+             connect_timeout = \"1s\"\n\
+             total_timeout = \"5s\"\n\
+             \n\
+             [presets.p]\n\
+             hosts = [\"ok\"]\n",
+            bin = fake_ssh()
+        ),
+    )
+}
+
+#[test]
+fn doctor_applies_no_mux_to_the_probe_argv() {
+    let dir = TempDir::new("docmux");
+    let cfg = mux_config(&dir);
+    let args_path = dir.file("args.txt");
+    let out = run(gpufree(&cfg)
+        .args(["--no-mux", "doctor", "--probe"])
+        .env("HOME", &dir.path)
+        .env("FAKE_SSH_ARGS_OUT", &args_path));
+    assert_eq!(
+        code(&out),
+        0,
+        "stdout: {}\nstderr: {}",
+        stdout(&out),
+        stderr(&out)
+    );
+    let args = fs::read_to_string(&args_path).unwrap();
+    assert!(
+        args.lines().any(|arg| arg == "ControlMaster=no"),
+        "probe argv must disable mux: {args}"
+    );
+    assert!(!args.contains("ControlMaster=auto"), "{args}");
+    assert!(!args.contains("ControlPath=/"), "{args}");
+}
+
+#[test]
+fn doctor_uses_mux_by_default_for_the_probe_argv() {
+    // Control for the test above: proves the fixture can observe mux at all.
+    let dir = TempDir::new("docmuxon");
+    let cfg = mux_config(&dir);
+    let args_path = dir.file("args.txt");
+    let out = run(gpufree(&cfg)
+        .args(["doctor", "--probe"])
+        .env("HOME", &dir.path)
+        .env("FAKE_SSH_ARGS_OUT", &args_path));
+    assert_eq!(
+        code(&out),
+        0,
+        "stdout: {}\nstderr: {}",
+        stdout(&out),
+        stderr(&out)
+    );
+    let args = fs::read_to_string(&args_path).unwrap();
+    assert!(args.contains("ControlMaster=auto"), "{args}");
+    assert!(args.contains("ControlPath="), "{args}");
+}
+
+// ---------------------------------------------------------------------------
+// JSON keeps remote text raw (A26)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn json_wire_format_escapes_c0_and_keeps_raw_values() {
+    // A26: JSON is data, not terminal output. serde escapes C0 (`\u001b`), the
+    // document carries no raw ESC byte, and the decoded value is unchanged.
+    let dir = TempDir::new("jsonctl");
+    let cfg = config(&dir, "");
+    let out = run(gpufree(&cfg).args(["--host", "evil", "--json"]));
+    assert_eq!(code(&out), 0, "stderr: {}", stderr(&out));
+
+    let wire = stdout(&out);
+    assert!(!wire.contains('\u{1b}'), "raw ESC in JSON: {wire:?}");
+    assert!(!wire.contains('\u{7}'), "raw BEL in JSON: {wire:?}");
+    assert!(wire.contains("\\u001b"), "{wire:?}");
+    assert!(wire.contains("\\u0007"), "{wire:?}");
+
+    let value = json(&out);
+    assert_eq!(
+        value["hosts"][0]["gpus"][0]["name"],
+        "EVIL\u{1b}]0;PWNED\u{7}"
+    );
+}

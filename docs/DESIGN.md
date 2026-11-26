@@ -2,14 +2,15 @@
 
 > 一条命令看清一组服务器的 GPU 空闲情况：`--json` 给脚本，TTY 下开一个可检索的终端面板。
 
-- 版本：v1.5
+- 版本：v1.6
 - 日期：2026-11-25
-- 状态：设计定稿，M1–M3 与 v1.5 补全已实现
+- 状态：设计定稿，M1–M3、v1.5 补全与 v1.6 修复已实现
 - 变更：用户指定 Rust；进程管理、TUI、依赖选型随之调整，SSH 协议、空闲判定、JSON schema、v1 范围不变
 - v1.2 变更：用户评审补充 TUI 每机空闲小计与单机详情页（R5 / §8.1 / §8.5 / D20）；探测层与 JSON 不变
 - v1.3 变更：独立审查提出 25 处歧义，§16 给出最终实现口径（A1–A28，含首轮审查补遗）；`output_limit` 错误分类；示例配置修正
 - v1.4 变更：终端消失（pty 关闭 / tmux session 被 kill）时 TUI 必须自退，不能依赖 crossterm 的事件等待（A29 / §8.4）；新增 pty 回归测试
 - v1.5 变更：新增 shell 补全（§17）：`completion` 子命令负责打印/安装/卸载/状态，隐藏 `__complete` 运行时遍历 clap 树给出候选，支持 preset 名与 ssh 别名
+- v1.6 变更：A26 措辞修订——serde 只转义 C0，DEL/C1 原样保留，是否被终端解释取决于终端（§10）；§3.1 补充 stdout 写失败退出码（EPIPE → 0，真实写错误 → 1，覆盖原判定）；CLI 健壮性修复（stdout broken pipe 不再 panic、`doctor --no-mux` 生效）
 
 ---
 
@@ -150,6 +151,7 @@ gpufree completion --uninstall           # 删除补全文件与托管 rc 块
 | 1 | 全部 host 失败；或 `--strict` 下出现任一失败 |
 | 2 | 用法 / 配置错误 |
 | 3 | `--require-free` 且没有空闲 GPU |
+| 0 / 1 | stdout 写失败，在原有退出码之后判定并**覆盖**上表结果：EPIPE（含终端消失的 `EIO`）→ `0`，其他真实写错误 → `1`（包括覆盖 `--require-free` 的 3 与 `--strict` 的 1） |
 
 判定优先级：全部失败 → `1`（优先于 `--require-free` 的 3）；`--strict` 下任一失败 → `1`；至少一台成功且 `--require-free` 无空闲 → `3`；其余成功场景 → `0`。
 
@@ -589,7 +591,7 @@ v1 明确不做：面板内切 preset、复制到剪贴板、多选刷新。
 - 参数经 `Command` 直传，不拼本地 shell 字符串；远端脚本固定，无用户输入插值。
 - 单 host 输出上限 8 MiB；超限 kill。
 - 不读取、不打印任何密钥内容。
-- 远端返回的 hostname / GPU 名称 / 进程名 / 错误文本在写入表格或 TUI 前剥离 C0/C1 控制字符（含 ESC/OSC/BEL），防止终端控制序列注入；JSON 由序列化器转义。
+- 远端返回的 hostname / GPU 名称 / 进程名 / 错误文本在写入表格或 TUI 前剥离 C0/C1 控制字符（含 ESC/OSC/BEL），防止终端控制序列注入。JSON 保留原文：serde 按 JSON 规范把 C0 转义到 wire 上（写成 `\u001b` 等），落盘、打日志安全；DEL（0x7F）与 C1（0x80–0x9F）原样保留，是否被终端解释取决于终端（xterm 默认把 C1 当控制字符）。只有 table/TUI/doctor 的输出保证清洗；任何把 JSON 解码后再写终端的下游（如 `jq -r`）必须自行过滤（A26）。
 - 取消/超时/退出都 kill 进程组，避免遗留 ssh 子进程。
 
 ---
@@ -708,7 +710,7 @@ v1 明确不做：面板内切 preset、复制到剪贴板、多选刷新。
 | A23 | 两轮 GPU query 都失败 → host `status=error`、`kind=nvidia_smi_failed`、`gpus=[]`、`retryable=true`；不生成 unknown GPU 行。§6 首行按此理解。 |
 | A24 | `[settings]` 不接受 `prefix`；示例配置已删除该注释。`prefix` 只在 preset 级。 |
 | A25 | §5.2 脚本中的 `while ... -lt 2` / `sleep 1` 是伪代码；实际脚本必须按配置写入 `samples` / `sample_interval`；亚秒间隔写成 `sleep 0.5` 这类小数。 |
-| A26 | 表格/TUI 渲染前必须剥离远端字符串中的 C0/C1 控制字符（ESC/OSC/BEL 等），JSON 保持原值由 serde 转义。 |
+| A26 | 表格/TUI 渲染前必须剥离远端字符串中的 C0/C1 控制字符（ESC/OSC/BEL 等），JSON 保持原值、不做清洗：serde 仅转义 C0，DEL/C1 原样保留；下游解码后写终端需自行过滤。 |
 | A27 | 重复的 `@@GPU` 段 → `parse_error`（retryable=false），不得归类为 `nvidia_smi_failed`。 |
 | A28 | doctor 的 `ssh -V` 非零退出同样计为检查失败（doctor 返回 1），不能输出 “all checks passed”。 |
 | A29 | TUI 必须自己 `poll(2)` 等 stdin 并识别 `POLLHUP`/`POLLERR`/`POLLNVAL`，不能把等待交给 `crossterm::event::poll`：crossterm 0.29 的 mio 事件源读到 EOF（`Ok(0)`）时死循环，pty 消失后进程会 100% CPU 泄漏且 ssh 子进程不收。写 stdout 遇到 `EIO`/`EPIPE` 同样按终端消失处理，cancel 探测后以 0 退出。 |

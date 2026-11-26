@@ -127,9 +127,9 @@ fn run_inner(args: &CompletionArgs) -> Result<(), String> {
                     "marker_version": install::MARKER_VERSION,
                     "script": script,
                 });
-                println!("{payload}");
+                crate::outln!("{payload}");
             } else {
-                print!("{script}");
+                crate::out!("{script}");
             }
         }
         Action::Install => {
@@ -142,9 +142,9 @@ fn run_inner(args: &CompletionArgs) -> Result<(), String> {
             };
             let report = install::install(&shell, &options, &env)?;
             if args.json {
-                println!("{}", install_json("install", &report));
+                crate::outln!("{}", install_json("install", &report));
             } else if !args.quiet {
-                println!("{}", format_install(&report));
+                crate::outln!("{}", format_install(&report));
             }
         }
         Action::Uninstall => {
@@ -157,9 +157,9 @@ fn run_inner(args: &CompletionArgs) -> Result<(), String> {
             };
             let report = install::uninstall(&shell, &options, &env)?;
             if args.json {
-                println!("{}", install_json("uninstall", &report));
+                crate::outln!("{}", install_json("uninstall", &report));
             } else if !args.quiet {
-                println!("{}", format_uninstall(&report));
+                crate::outln!("{}", format_uninstall(&report));
             }
         }
         Action::Status => {
@@ -185,9 +185,9 @@ fn run_inner(args: &CompletionArgs) -> Result<(), String> {
                     "rc_state": report.rc_state,
                     "message": report.message,
                 });
-                println!("{payload}");
+                crate::outln!("{payload}");
             } else if !args.quiet {
-                println!("{}", format_status(&report));
+                crate::outln!("{}", format_status(&report));
             }
         }
     }
