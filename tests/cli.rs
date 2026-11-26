@@ -1009,3 +1009,52 @@ fn sigint_leaves_no_orphan_ssh_processes() {
     });
     assert!(gone, "orphan ssh/sleep processes remain: {pids:?}");
 }
+// ---------------------------------------------------------------------------
+// CLI robustness: broken stdout pipe, doctor --no-mux, raw JSON (A26)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn closed_stdout_pipe_exits_cleanly() {
+    use std::io::Read;
+
+    // `presets list` is pure formatting (no ssh), so 4000 rows are cheap and
+    // comfortably exceed any pipe buffer. The child therefore blocks writing
+    // once we stop reading, and closing the read end forces EPIPE.
+    let dir = TempDir::new("epipe");
+    let mut text = String::from("[settings]\nssh_binary = \"/usr/bin/false\"\n\n");
+    for i in 0..4000 {
+        text.push_str(&format!(
+            "[presets.p{i}]\nhosts = [\"h{i}\"]\ndescription = \"{}\"\n",
+            "x".repeat(40)
+        ));
+    }
+    let cfg = write_raw(&dir, "config.toml", &text);
+
+    let mut child = StdCommand::new(env!("CARGO_BIN_EXE_gpufree"))
+        .arg("--config")
+        .arg(&cfg)
+        .args(["presets", "list"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn gpufree");
+
+    let mut stdout = child.stdout.take().expect("stdout pipe");
+    let mut buf = [0u8; 64];
+    let _ = stdout.read(&mut buf);
+    drop(stdout);
+
+    let output = child.wait_with_output().expect("wait for gpufree");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "closed pipe must exit quietly, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "no panic or warning expected on EPIPE: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("panicked"));
+}

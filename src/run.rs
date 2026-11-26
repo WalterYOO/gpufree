@@ -39,7 +39,7 @@ pub fn run(cli: Cli) -> i32 {
 fn cmd_init(cli: &Cli) -> i32 {
     match config::init(cli.config.as_deref()) {
         Ok(InitOutcome::Created(path)) => {
-            println!("wrote {}", path.display());
+            crate::outln!("wrote {}", path.display());
             0
         }
         Ok(InitOutcome::Exists(path)) => {
@@ -71,14 +71,16 @@ fn cmd_presets(cli: &Cli, action: &PresetsAction) -> i32 {
     match action {
         PresetsAction::List => {
             if loaded.config.presets.is_empty() {
-                println!("no presets configured");
+                crate::outln!("no presets configured");
             } else {
-                println!(
+                crate::outln!(
                     "{:<20} {:<8} {:>5}  DESCRIPTION",
-                    "PRESET", "TRANSPORT", "HOSTS"
+                    "PRESET",
+                    "TRANSPORT",
+                    "HOSTS"
                 );
                 for (name, preset) in &loaded.config.presets {
-                    println!(
+                    crate::outln!(
                         "{:<20} {:<8} {:>5}  {}",
                         name,
                         preset.transport.to_string(),
@@ -91,13 +93,13 @@ fn cmd_presets(cli: &Cli, action: &PresetsAction) -> i32 {
         }
         PresetsAction::Validate => {
             for (name, preset) in &loaded.config.presets {
-                println!(
+                crate::outln!(
                     "preset {name}: ok ({} hosts, transport {})",
                     preset.hosts.len(),
                     preset.transport
                 );
             }
-            println!("configuration valid");
+            crate::outln!("configuration valid");
             0
         }
     }
@@ -139,19 +141,19 @@ fn cmd_print_config(cli: &Cli) -> i32 {
         config.settings.color = color;
     }
 
-    println!("# effective configuration from {}", loaded.path.display());
-    println!("# (contains no secrets; transport resolution shown below)");
-    print!("{}", config.to_toml());
+    crate::outln!("# effective configuration from {}", loaded.path.display());
+    crate::outln!("# (contains no secrets; transport resolution shown below)");
+    crate::out!("{}", config.to_toml());
 
-    println!("\n[resolved]");
+    crate::outln!("\n[resolved]");
     let resolver = Resolver::new(config.settings.ssh_binary.clone());
     let mut failed = false;
     if config.presets.is_empty() {
-        println!("# no presets configured");
+        crate::outln!("# no presets configured");
     }
     for (name, preset) in &config.presets {
         let mode = cli.transport.unwrap_or(preset.transport);
-        println!("# preset {name} (transport {mode})");
+        crate::outln!("# preset {name} (transport {mode})");
         match resolver.plan(&preset.hosts, mode, &preset.remote_aliases) {
             Ok(plans) => {
                 for plan in plans {
@@ -163,14 +165,18 @@ fn cmd_print_config(cli: &Cli) -> i32 {
                             _ => "?".to_string(),
                         })
                         .unwrap_or_else(|| "?".to_string());
-                    println!(
+                    crate::outln!(
                         "#   {} -> {}  transport={} endpoint={} proxied={}",
-                        plan.host, plan.alias, plan.transport_used, endpoint, plan.proxied
+                        plan.host,
+                        plan.alias,
+                        plan.transport_used,
+                        endpoint,
+                        plan.proxied
                     );
                 }
             }
             Err(err) => {
-                println!("#   ERROR: {err}");
+                crate::outln!("#   ERROR: {err}");
                 failed = true;
             }
         }
@@ -495,7 +501,7 @@ fn run_batch(
     let stdout_is_tty = std::io::stdout().is_terminal();
     match mode {
         OutputMode::Json => match output::json::render(&snapshot) {
-            Ok(text) => print!("{text}"),
+            Ok(text) => crate::out!("{text}"),
             Err(err) => {
                 eprintln!("gpufree: failed to serialize JSON: {err}");
                 return 1;
@@ -503,7 +509,7 @@ fn run_batch(
         },
         OutputMode::Table => {
             let color = settings.color.enabled(stdout_is_tty);
-            print!("{}", output::table::render(&snapshot, color));
+            crate::out!("{}", output::table::render(&snapshot, color));
         }
         OutputMode::Tui => unreachable!("TUI handled separately"),
     }

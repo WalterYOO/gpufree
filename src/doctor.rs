@@ -17,22 +17,22 @@ use crate::probe::{self, HostMeta, JobSpec};
 pub fn run(config: &Config, path: &Path, present: bool, probe: bool, utc: bool) -> i32 {
     let mut failures = 0usize;
 
-    println!("gpufree doctor");
+    crate::outln!("gpufree doctor");
     if present {
-        println!("config: {} (loaded)", path.display());
+        crate::outln!("config: {} (loaded)", path.display());
     } else {
-        println!(
+        crate::outln!(
             "config: {} (not found; using built-in defaults — run `gpufree init`)",
             path.display()
         );
     }
-    println!("presets: {}", config.presets.len());
+    crate::outln!("presets: {}", config.presets.len());
 
     let binary = config.settings.ssh_binary.clone();
     if probe::ssh::ssh_available(&binary) {
-        println!("ssh binary: {binary} (executable)");
+        crate::outln!("ssh binary: {binary} (executable)");
     } else {
-        println!("ssh binary: {binary} (NOT executable)");
+        crate::outln!("ssh binary: {binary} (NOT executable)");
         failures += 1;
     }
     match Command::new(&binary).arg("-V").output() {
@@ -43,7 +43,7 @@ pub fn run(config: &Config, path: &Path, present: bool, probe: bool, utc: bool) 
                 String::from_utf8_lossy(&output.stderr)
             );
             let line = text.lines().next().unwrap_or("(no output)");
-            println!("ssh version: {line}");
+            crate::outln!("ssh version: {line}");
         }
         Ok(output) => {
             // A26/A28: `ssh -V` exiting non-zero is a failed check, not a
@@ -54,14 +54,14 @@ pub fn run(config: &Config, path: &Path, present: bool, probe: bool, utc: bool) 
                 String::from_utf8_lossy(&output.stderr)
             );
             let line = text.lines().next().unwrap_or("(no output)");
-            println!(
+            crate::outln!(
                 "ssh version: FAILED (exit {}): {line}",
                 output.status.code().unwrap_or(-1)
             );
             failures += 1;
         }
         Err(err) => {
-            println!("ssh version: FAILED ({err})");
+            crate::outln!("ssh version: FAILED ({err})");
             failures += 1;
         }
     }
@@ -71,10 +71,10 @@ pub fn run(config: &Config, path: &Path, present: bool, probe: bool, utc: bool) 
     let mut index = 0usize;
 
     if config.presets.is_empty() {
-        println!("\nno presets configured");
+        crate::outln!("\nno presets configured");
     }
     for (name, preset) in &config.presets {
-        println!("\npreset {name} (transport {})", preset.transport);
+        crate::outln!("\npreset {name} (transport {})", preset.transport);
         match resolver.plan(&preset.hosts, preset.transport, &preset.remote_aliases) {
             Ok(plans) => {
                 for plan in plans {
@@ -91,16 +91,16 @@ pub fn run(config: &Config, path: &Path, present: bool, probe: bool, utc: bool) 
                 }
             }
             Err(err) => {
-                println!("  ERROR: {err}");
+                crate::outln!("  ERROR: {err}");
                 failures += 1;
             }
         }
     }
 
     if probe {
-        println!("\nprobing {} host(s)…", specs.len());
+        crate::outln!("\nprobing {} host(s)…", specs.len());
         if !probe::ssh::ssh_available(&binary) {
-            println!("--probe skipped: ssh binary is not executable");
+            crate::outln!("--probe skipped: ssh binary is not executable");
             return 1;
         }
         let total = specs.len();
@@ -131,22 +131,22 @@ pub fn run(config: &Config, path: &Path, present: bool, probe: bool, utc: bool) 
                 }
                 None => {
                     failures += 1;
-                    println!("  {}: ERROR cancelled (no result)", meta.host);
+                    crate::outln!("  {}: ERROR cancelled (no result)", meta.host);
                 }
             }
         }
         if interrupted {
             failures += 1;
-            println!("\nprobe was interrupted by a signal");
+            crate::outln!("\nprobe was interrupted by a signal");
         }
     }
 
-    println!();
+    crate::outln!();
     if failures == 0 {
-        println!("doctor: all checks passed");
+        crate::outln!("doctor: all checks passed");
         0
     } else {
-        println!("doctor: {failures} check(s) failed");
+        crate::outln!("doctor: {failures} check(s) failed");
         1
     }
 }
@@ -155,9 +155,10 @@ pub fn run(config: &Config, path: &Path, present: bool, probe: bool, utc: bool) 
 /// the caller counts as a doctor failure (DOC-03/A6).
 fn print_plan(resolver: &Resolver, plan: &HostPlan, preset: &str) -> bool {
     let Some(cfg) = resolver.ssh_g(&plan.alias) else {
-        println!(
+        crate::outln!(
             "  ERROR: preset {preset} host {}: `ssh -G {}` failed (alias not resolvable)",
-            plan.host, plan.alias
+            plan.host,
+            plan.alias
         );
         return false;
     };
@@ -170,12 +171,16 @@ fn print_plan(resolver: &Resolver, plan: &HostPlan, preset: &str) -> bool {
     } else {
         String::new()
     };
-    println!(
+    crate::outln!(
         "  {:<20} -> {:<24} {:<7} {}{}",
-        plan.host, plan.alias, plan.transport_used, endpoint, via
+        plan.host,
+        plan.alias,
+        plan.transport_used,
+        endpoint,
+        via
     );
     if cfg.hostname.as_deref() == Some(plan.alias.as_str()) {
-        println!(
+        crate::outln!(
             "       note: no ssh_config Host entry for {:?}; resolved literally",
             plan.alias
         );
@@ -202,17 +207,18 @@ fn print_probe(meta: &HostMeta, result: &HostResult) {
         let message =
             crate::output::sanitize::clean(error.map(|e| e.message.as_str()).unwrap_or(""));
         let retry = error.map(|e| e.retryable).unwrap_or(false);
-        println!(
+        crate::outln!(
             "  {} [{}]: ERROR {kind} (retryable={retry}) {message}",
-            meta.host, transport
+            meta.host,
+            transport
         );
         if error.map(|e| e.kind) == Some(crate::model::ErrorKind::SshAuth) {
-            println!("       needs password/2FA; BatchMode=yes cannot proceed");
+            crate::outln!("       needs password/2FA; BatchMode=yes cannot proceed");
         }
         return;
     }
     if result.gpus.is_empty() {
-        println!("  {} [{}]: ok · no GPU", meta.host, transport);
+        crate::outln!("  {} [{}]: ok · no GPU", meta.host, transport);
         return;
     }
     let mut drivers: Vec<String> = result
@@ -234,7 +240,7 @@ fn print_probe(meta: &HostMeta, result: &HostResult) {
     } else {
         "compute-apps INCOMPLETE (permission?)"
     };
-    println!(
+    crate::outln!(
         "  {} [{}]: ok · {} GPUs · {} · MIG {} · {}",
         meta.host,
         transport,
